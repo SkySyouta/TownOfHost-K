@@ -954,6 +954,7 @@ namespace TownOfHost
             ReportDeadBodyPatch.DontReport.Clear();
             RandomSpawn.SpawnMap.NextSporn.Clear();
             RandomSpawn.SpawnMap.NextSpornName.Clear();
+            RandomSpawn.IntroTeleported = false;
             Patches.ISystemType.VentilationSystemUpdateSystemPatch.NowVentId.Clear();
             CoEnterVentPatch.VentPlayers.Clear();
             MeetingHudPatch.Oniku = "";

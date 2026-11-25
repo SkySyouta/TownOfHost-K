@@ -115,8 +115,8 @@ namespace TownOfHost
                             state.HasSpawned = true;
                             return false;
                         }
-                        // SnapTo先が湧き位置だったら湧き処理に進む
-                        if (IsAirshipVanillaSpawnPosition(position))
+                        // SnapTo先が湧き位置(バニラ or MOD導入者がホスト指定のランダム湧き位置へ転送してきた)だったら湧き処理に進む
+                        if (IsAirshipVanillaSpawnPosition(position) || IsExpectedRandomSpawnPosition(player.PlayerId, position))
                         {
                             AirshipSpawn(player);
                             return !IsRandomSpawn();
@@ -157,6 +157,17 @@ namespace TownOfHost
                 var decuplePosition = (decupleXInt, decupleYInt);
                 return decupleVanillaSpawnPositions.Contains(decuplePosition);
             }
+            /// <summary>
+            /// ホストが事前に決めて送ったランダム湧き位置か。
+            /// MOD導入クライアントは湧き位置選択時にこの位置へ直接転送してくる。
+            /// </summary>
+            private static bool IsExpectedRandomSpawnPosition(byte playerId, Vector2 position)
+            {
+                if (!IsRandomSpawn()) return false;
+                if (!SpawnMap.NextSporn.TryGetValue(playerId, out var expected)) return false;
+                // WriteVector2/ReadVector2による量子化誤差を許容する
+                return Vector2.Distance(expected, position) < 0.2f;
+            }
             /// <summary>比較用 エアシップのバニラ湧き位置の10倍</summary>
             public static readonly HashSet<(int x, int y)> decupleVanillaSpawnPositions = new()
             {
@@ -175,7 +186,7 @@ namespace TownOfHost
             {
                 if (!AmongUsClient.Instance.AmHost)
                 {
-                    return true;
+                    return ClientPrefix(__instance, spawnPoint);
                 }
 
                 if (__instance.amClosing != Minigame.CloseState.None)
@@ -213,6 +224,30 @@ namespace TownOfHost
                     AirshipSpawn(PlayerControl.LocalPlayer);
                     return true;
                 }
+            }
+            /// <summary>
+            /// MOD導入クライアント(非ホスト)の湧き位置選択。
+            /// ホストからランダム湧き位置を受け取っていれば、選んだ場所ではなくそこへ直接転送する。
+            /// (選んだ場所に一瞬湧いてからワープする見た目を防ぐ)
+            /// ホストはこのSnapToを湧きとして検知し、湧き処理を行う。
+            /// </summary>
+            private static bool ClientPrefix(SpawnInMinigame __instance, SpawnInMinigame.SpawnLocation spawnPoint)
+            {
+                if (__instance.amClosing != Minigame.CloseState.None) return true;
+
+                var player = PlayerControl.LocalPlayer;
+                // 受け取っていない(ホストが旧バージョン・ランダムスポーン無効等)ならバニラ通り
+                if (!SpawnMap.NextSporn.Remove(player.PlayerId, out var location)) return true;
+
+                Logger.Info($"ホスト指定の湧き位置へ転送: {location}", "RandomSpawn");
+                __instance.gotButton = true;
+                player.SetKinematic(true);
+                player.NetTransform.SetPaused(true);
+                player.RpcSnapToForced(location, SendOption.Reliable);
+                DestroyableSingleton<HudManager>.Instance.PlayerCam.SnapToTarget();
+                __instance.StopAllCoroutines();
+                __instance.StartCoroutine(__instance.CoSpawnAt(player, spawnPoint));
+                return false;
             }
         }
         public static void AirshipSpawn(PlayerControl player)
@@ -270,6 +305,45 @@ namespace TownOfHost
                 //}
             }
             PlayerState.GetByPlayerId(player.PlayerId).HasSpawned = true;
+        }
+        /// <summary>ゲーム開始時のランダムスポーンが実行済みか</summary>
+        public static bool IntroTeleported = false;
+        /// <summary>
+        /// ゲーム開始時のランダムスポーン。
+        /// イントロで画面が隠れている間に呼び、バニラの湧き位置が見えないようにする。
+        /// エアシップ(とSubmerged)はスポーン選択後に湧くため対象外。
+        /// </summary>
+        public static void IntroTeleport()
+        {
+            if (!AmongUsClient.Instance.AmHost) return;
+            if (IntroTeleported) return;
+            if (!IsRandomSpawn()) return;
+
+            // エアシップは湧き位置選択後に湧くので、ここでは湧き位置を決めてMOD導入者へ送るだけ。
+            // MOD導入者は選択時にその位置へ直接転送する。
+            if ((MapNames)Main.NormalOptions.MapId is MapNames.Airship)
+            {
+                IntroTeleported = true;
+                // タスクバトルはNextSpornを使わない(固定されてしまう)ので対象外
+                if (Options.CurrentGameMode is CustomGameMode.TaskBattle) return;
+                var airship = new AirshipSpawnMap();
+                PlayerCatch.AllPlayerControls.Do(airship.DecideNextSpawn);
+                return;
+            }
+
+            SpawnMap map = Main.NormalOptions.MapId switch
+            {
+                0 => new SkeldSpawnMap(),
+                1 => new MiraHQSpawnMap(),
+                2 => new PolusSpawnMap(),
+                5 => new FungleSpawnMap(),
+                _ => null,
+            };
+            if (map == null) return;
+
+            IntroTeleported = true;
+            Logger.Info("イントロ中にランダムスポーン", "RandomSpawn");
+            PlayerCatch.AllPlayerControls.Do(map.RandomTeleport);
         }
         public static bool CheckCustomSpawn()
         {
@@ -419,10 +493,15 @@ namespace TownOfHost
             public abstract Dictionary<OptionItem, Vector2> Positions { get; }
             public virtual void RandomTeleport(PlayerControl player)
             {
-                var roomtext = "";
                 Teleport(player, true);
                 //ここで次の湧き位置を決定
                 if (Options.CurrentGameMode is CustomGameMode.TaskBattle) return;
+                DecideNextSpawn(player);
+            }
+            /// <summary>次の湧き位置を決め、MOD導入者には位置も送る</summary>
+            public void DecideNextSpawn(PlayerControl player)
+            {
+                var roomtext = "";
                 var pos = GetLocation(ref roomtext, false);
                 if (!NextSporn.ContainsKey(player.PlayerId))
                     NextSporn.Add(player.PlayerId, pos);
@@ -434,10 +513,13 @@ namespace TownOfHost
 
                 if (player.IsModClient() && player.PlayerId != PlayerControl.LocalPlayer.PlayerId)
                 {
-                    var sender = AmongUsClient.Instance.StartRpcImmediately(PlayerControl.LocalPlayer.NetId, (byte)CustomRPC.SyncModSystem, SendOption.None, -1);
+                    var sender = AmongUsClient.Instance.StartRpcImmediately(PlayerControl.LocalPlayer.NetId, (byte)CustomRPC.SyncModSystem, SendOption.Reliable, -1);
                     sender.Write((int)RPC.ModSystem.SyncNextSpawn);
                     sender.Write(player.PlayerId);
                     sender.Write(roomtext);
+                    // 湧き位置選択時に直接転送するための座標
+                    sender.Write(pos.x);
+                    sender.Write(pos.y);
                     AmongUsClient.Instance.FinishRpcImmediately(sender);
                 }
             }

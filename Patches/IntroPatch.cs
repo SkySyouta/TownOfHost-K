@@ -24,7 +24,19 @@ namespace TownOfHost
             //ShowRoleはステートマシンクラスになっているためその実行前にパッチを当てる
             //元々Postfixだが、タイミング的にはPrefixの方が適切なのでPrefixに当てる
             //androidは_ShowRole_d__41なんてないよとエラーを吐く。
-            patcher.AddPrefix(typeof(IntroCutscene), nameof(IntroCutscene.ShowRole), () => SetUpRoleTextPatch.Postfix(__instance));
+            patcher.AddPrefix(typeof(IntroCutscene), nameof(IntroCutscene.ShowRole), () =>
+            {
+                SetUpRoleTextPatch.Postfix(__instance);
+                // イントロで画面が隠れている間にランダムスポーンさせる
+                try
+                {
+                    RandomSpawn.IntroTeleport();
+                }
+                catch (Exception ex)
+                {
+                    Logger.Exception(ex, "RandomSpawn");
+                }
+            });
             __result = patcher.EnumerateWithPatch();
         }
     }
@@ -461,29 +473,9 @@ namespace TownOfHost
                     PlayerState.GetByPlayerId(PlayerControl.LocalPlayer.PlayerId).SetDead();
                 }
 
-                if (RandomSpawn.IsRandomSpawn())
-                {
-                    RandomSpawn.SpawnMap map;
-                    switch (mapId)
-                    {
-                        case 0:
-                            map = new RandomSpawn.SkeldSpawnMap();
-                            PlayerCatch.AllPlayerControls.Do(map.RandomTeleport);
-                            break;
-                        case 1:
-                            map = new RandomSpawn.MiraHQSpawnMap();
-                            PlayerCatch.AllPlayerControls.Do(map.RandomTeleport);
-                            break;
-                        case 2:
-                            map = new RandomSpawn.PolusSpawnMap();
-                            PlayerCatch.AllPlayerControls.Do(map.RandomTeleport);
-                            break;
-                        case 5:
-                            map = new RandomSpawn.FungleSpawnMap();
-                            PlayerCatch.AllPlayerControls.Do(map.RandomTeleport);
-                            break;
-                    }
-                }
+                // 通常はイントロ(ShowRole)中に実行済み。
+                // ShowRoleへのパッチが効かない環境(android等)向けのフォールバック。
+                RandomSpawn.IntroTeleport();
 
                 foreach (var kvp in PlayerState.AllPlayerStates)
                 {

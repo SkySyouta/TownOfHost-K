@@ -649,6 +649,12 @@ namespace TownOfHost
                         {
                             RandomSpawn.SpawnMap.NextSpornName[playerid] = NextSpornName;
                         }
+                        // 座標付き(新しいホスト)なら、湧き位置選択時の転送先として保持
+                        if (reader.BytesRemaining >= 8)
+                        {
+                            var pos = new UnityEngine.Vector2(reader.ReadSingle(), reader.ReadSingle());
+                            RandomSpawn.SpawnMap.NextSporn[playerid] = pos;
+                        }
                         break;
                     }
                 case ModSystem.SyncOneLove:
